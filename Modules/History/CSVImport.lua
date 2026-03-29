@@ -171,6 +171,7 @@ function His:RebuildData (lines)
       private:RebuildResponseID(lines[i], rebuilt[i], i)
       rebuilt[i].groupSize = lines[i][15] and tonumber(lines[i][15])
       rebuilt[i].note = lines[i][22] ~= "" and lines[i][22] or nil
+      rebuilt[i].candidates = lines[i][24] ~= "" and lines[i][24] or nil -- Raw JSON string, stored as-is
    end
    return rebuilt
 end
@@ -532,7 +533,8 @@ end
 
 function private:ValidateHeader (header, delimiter)
    local target = {"player", "date", "time", "id", "item", "itemID", "itemString", "response", "votes", "class", "instance", "boss", "difficultyID", "mapID", "groupSize", "gear1", "gear2", "responseID", "isAwardReason", "subType", "equipLoc", "note", "owner"}
-   return header == table.concat(target,delimiter)
+   local targetWithCandidates = {"player", "date", "time", "id", "item", "itemID", "itemString", "response", "votes", "class", "instance", "boss", "difficultyID", "mapID", "groupSize", "gear1", "gear2", "responseID", "isAwardReason", "subType", "equipLoc", "note", "owner", "candidates"}
+   return header == table.concat(target,delimiter) or header == table.concat(targetWithCandidates,delimiter)
 end
 
 function private:ValidateLine (num, line)
@@ -646,5 +648,9 @@ private.validators = {
       -- either nothing or a string
 		return input == nil or #input >= 0 or private:AddError(num, input, "Malformed owner - (nothing or name)")
    end,
+   function (num, input) -- candidates
+      -- optional JSON string
+      return true
+   end,
 }
-private.numFields = #private.validators
+private.numFields = #private.validators - 1 -- candidates column is optional

@@ -1284,6 +1284,37 @@ function RCLootCouncilML:TrackAndLogLoot(winner, link, responseID, boss, reason,
 	history_table["owner"]			= owner or self.lootTable[session] and self.lootTable[session].owner or winner		-- New in v2.9+.
 	history_table["typeCode"]		= self.lootTable[session] and self.lootTable[session].typeCode					-- New in v2.15+.
 
+	-- New: capture all candidate selections from the voting frame
+	local votingFrame = addon:GetActiveModule("votingframe")
+	if db.trackAllCandidates and votingFrame and session then
+		local candidates = {}
+		for name in addon:GroupIterator() do
+			local response = votingFrame:GetCandidateData(session, name, "response")
+			if response and response ~= "ANNOUNCED" then
+				local gear1 = votingFrame:GetCandidateData(session, name, "gear1")
+				local gear2 = votingFrame:GetCandidateData(session, name, "gear2")
+				local votes = votingFrame:GetCandidateData(session, name, "votes")
+				local voters = votingFrame:GetCandidateData(session, name, "voters")
+				local entry = {
+					response   = response,
+					class      = votingFrame:GetCandidateData(session, name, "class"),
+					votes      = votes and votes > 0 and votes or nil,
+					gear1      = gear1 and select(2, C_Item.GetItemInfo(gear1)),
+					gear2      = gear2 and select(2, C_Item.GetItemInfo(gear2)),
+					ilvl       = votingFrame:GetCandidateData(session, name, "ilvl"),
+					note       = votingFrame:GetCandidateData(session, name, "note"),
+					roll       = votingFrame:GetCandidateData(session, name, "roll"),
+				}
+				if entry.ilvl == "" then entry.ilvl = nil end
+				if db.trackCouncilVotes and voters and #voters > 0 then
+					entry.voters = voters
+				end
+				candidates[name] = entry
+			end
+		end
+		history_table["candidates"] = candidates
+	end
+
 	historyCounter = historyCounter + 1
 
 	addon:SendMessage("RCMLLootHistorySend", history_table, winner, responseID, boss, reason, session, candData)

@@ -547,6 +547,19 @@ function addon:OptionsTable()
 										desc = L.opt_savePersonalLoot_desc,
 										type = "toggle",
 									},
+									trackAllCandidates = {
+										order = 3.3,
+										name = L.opt_trackAllCandidates_name,
+										desc = L.opt_trackAllCandidates_desc,
+										type = "toggle",
+									},
+									trackCouncilVotes = {
+										order = 3.4,
+										name = L.opt_trackCouncilVotes_name,
+										desc = L.opt_trackCouncilVotes_desc,
+										type = "toggle",
+										disabled = function() return not self.db.profile.trackAllCandidates end,
+									},
 									header = {
 										order = 4,
 										type = "header",

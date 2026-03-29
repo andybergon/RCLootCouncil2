@@ -1497,6 +1497,33 @@ do
 		return gsub(s, "\"", "\\\"")
 	end
 
+	-- Serialize a candidates table to a JSON string for export
+	local function CandidatesToJSON(candidates)
+		if not candidates then return "" end
+		if type(candidates) == "string" then return candidates end -- Pass through raw JSON from import
+		local parts = {}
+		for name, cand in pairs(candidates) do
+			local fields = {}
+			if cand.response ~= nil then tinsert(fields, string.format("\"response\":\"%s\"", QuotesEscape(tostring(cand.response)))) end
+			if cand.class then tinsert(fields, string.format("\"class\":\"%s\"", QuotesEscape(cand.class))) end
+			if cand.votes then tinsert(fields, string.format("\"votes\":%s", tostring(cand.votes))) end
+			if cand.ilvl then tinsert(fields, string.format("\"ilvl\":\"%s\"", QuotesEscape(tostring(cand.ilvl)))) end
+			if cand.gear1 then tinsert(fields, string.format("\"gear1\":\"%s\"", QuotesEscape(cand.gear1))) end
+			if cand.gear2 then tinsert(fields, string.format("\"gear2\":\"%s\"", QuotesEscape(cand.gear2))) end
+			if cand.note then tinsert(fields, string.format("\"note\":\"%s\"", QuotesEscape(cand.note))) end
+			if cand.roll then tinsert(fields, string.format("\"roll\":%s", tostring(cand.roll))) end
+			if cand.voters then
+				local voterParts = {}
+				for _, v in ipairs(cand.voters) do
+					tinsert(voterParts, string.format("\"%s\"", QuotesEscape(v)))
+				end
+				tinsert(fields, string.format("\"voters\":[%s]", table.concat(voterParts, ",")))
+			end
+			tinsert(parts, string.format("\"%s\":{%s}", QuotesEscape(name), table.concat(fields, ",")))
+		end
+		return "{" .. table.concat(parts, ",") .. "}"
+	end
+
 	--- CSV with all stored data
 	-- ~14 ms (74%) improvement by switching to table and concat
 	function LootHistory:ExportCSV()
@@ -1504,7 +1531,7 @@ do
 		wipe(export)
 		wipe(ret)
 		local subType, equipLoc
-		tinsert(ret, "player,date,time,id,item,itemID,itemString,response,votes,class,instance,boss,difficultyID,mapID,groupSize,gear1,gear2,responseID,isAwardReason,subType,equipLoc,note,owner\r\n")
+		tinsert(ret, "player,date,time,id,item,itemID,itemString,response,votes,class,instance,boss,difficultyID,mapID,groupSize,gear1,gear2,responseID,isAwardReason,subType,equipLoc,note,owner,candidates\r\n")
 		for player, v in pairs(self:GetFilteredDB()) do
 			for _, d in pairs(v) do
 				_,_,subType, equipLoc = C_Item.GetItemInfoInstant(d.lootWon)
@@ -1533,6 +1560,7 @@ do
 				tinsert(export, tostring(getglobal(equipLoc) or ""))
 				tinsert(export, CSVEscape(d.note))
 				tinsert(export, tostring(d.owner or "Unknown"))
+				tinsert(export, CSVEscape(CandidatesToJSON(d.candidates)))
 				tinsert(ret, table.concat(export, ","))
 				tinsert(ret, "\r\n")
 				wipe(export)
@@ -1555,7 +1583,7 @@ do
 		wipe(export)
 		wipe(ret)
 		local subType, equipLoc, rollType
-		tinsert(ret, "player\tdate\ttime\titem\titemID\titemString\tresponse\tvotes\tclass\tinstance\tboss\tgear1\tgear2\tresponseID\tisAwardReason\trollType\tsubType\tequipLoc\tnote\towner\r\n")
+		tinsert(ret, "player\tdate\ttime\titem\titemID\titemString\tresponse\tvotes\tclass\tinstance\tboss\tgear1\tgear2\tresponseID\tisAwardReason\trollType\tsubType\tequipLoc\tnote\towner\tcandidates\r\n")
 		for player, v in pairs(self:GetFilteredDB()) do
 			for _, d in pairs(v) do
 				_,_,subType, equipLoc = C_Item.GetItemInfoInstant(d.lootWon)
@@ -1581,6 +1609,7 @@ do
 				tinsert(export, tostring(getglobal(equipLoc) or ""))
 				tinsert(export, d.note or "")
 				tinsert(export, tostring(d.owner or "Unknown"))
+				tinsert(export, CandidatesToJSON(d.candidates))
 				tinsert(ret, table.concat(export, "\t"))
 				tinsert(ret, "\r\n")
 				wipe(export)
@@ -1632,6 +1661,9 @@ do
 				tinsert(export,
 				string.format("\"%s\":\"%s\"", "itemName", QuotesEscape(ItemUtils:GetItemNameFromLink(d.lootWon))))
 				tinsert(export, string.format("\"%s\":\"%s\"", "servertime", (strsplit("-", d.id, 2))))
+				if d.candidates then
+					tinsert(export, string.format("\"%s\":%s", "candidates", CandidatesToJSON(d.candidates)))
+				end
 
 				processedEntries = processedEntries + 1;
 

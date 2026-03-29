@@ -81,6 +81,8 @@ addon.defaults = {
 		sendHistory = true,
 		sendHistoryToGuildChannel = false,
 		savePersonalLoot = true,
+		trackAllCandidates = false, -- Log all candidate responses per item in history
+		trackCouncilVotes = false, -- Also log who voted for each candidate (requires trackAllCandidates)
 
 		-- ML - General - Usage
 		usage = { -- State of enabledness
