@@ -138,6 +138,58 @@ function LootHistory:OnHistoryReceived (name, history)
 	history.tierToken = RCTokenTable[itemID] and true
 	history.iClass = itemClassID
 	history.iSubClass = itemSubClassID
+	-- Capture candidate data from the local voting frame when not already present.
+	-- This allows any council member to record candidates, not just the ML.
+	local db = addon:Getdb()
+	if db.trackAllCandidates and not history.candidates then
+		local votingFrame = addon:GetActiveModule("votingframe")
+		if votingFrame then
+			local lt = votingFrame:GetLootTable()
+			if lt then
+				-- Match session by item link + awarded winner.
+				-- Track matched sessions to handle duplicate items awarded to the same player.
+				self._matchedSessions = self._matchedSessions or {}
+				for ses, entry in ipairs(lt) do
+					if not self._matchedSessions[ses]
+						and entry.link and addon:ItemIsItem(entry.link, history.lootWon)
+						and (entry.awarded == name or entry.awarded == true) then
+						self._matchedSessions[ses] = true
+						local candidates = {}
+						local hasCandidates = false
+						for candidateName in addon:GroupIterator() do
+							local response = votingFrame:GetCandidateData(ses, candidateName, "response")
+							if response and response ~= "ANNOUNCED" then
+								local gear1 = votingFrame:GetCandidateData(ses, candidateName, "gear1")
+								local gear2 = votingFrame:GetCandidateData(ses, candidateName, "gear2")
+								local votes = votingFrame:GetCandidateData(ses, candidateName, "votes")
+								local voters = votingFrame:GetCandidateData(ses, candidateName, "voters")
+								local candEntry = {
+									response   = response,
+									class      = votingFrame:GetCandidateData(ses, candidateName, "class"),
+									votes      = votes and votes > 0 and votes or nil,
+									gear1      = gear1 and select(2, C_Item.GetItemInfo(gear1)),
+									gear2      = gear2 and select(2, C_Item.GetItemInfo(gear2)),
+									ilvl       = votingFrame:GetCandidateData(ses, candidateName, "ilvl"),
+									note       = votingFrame:GetCandidateData(ses, candidateName, "note"),
+									roll       = votingFrame:GetCandidateData(ses, candidateName, "roll"),
+								}
+								if candEntry.ilvl == "" then candEntry.ilvl = nil end
+								if db.trackCouncilVotes and voters and #voters > 0 then
+									candEntry.voters = voters
+								end
+								candidates[candidateName] = candEntry
+								hasCandidates = true
+							end
+						end
+						if hasCandidates then
+							history.candidates = candidates
+						end
+						break
+					end
+				end
+			end
+		end
+	end
 	if addon.lootDB.factionrealm[name] then
 		tinsert(addon.lootDB.factionrealm[name], history)
 	else
