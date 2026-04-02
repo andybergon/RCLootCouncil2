@@ -1266,8 +1266,8 @@ function RCLootCouncilML:TrackAndLogLoot(winner, link, responseID, boss, reason,
 	history_table["instance"]     = instanceData.instanceName .. "-" .. instanceData.difficultyName
 	history_table["boss"] 			= boss or _G.UNKNOWN
 	history_table["votes"] 			= candData and candData.votes
-	history_table["itemReplaced1"]= (candData and candData.gear1) and select(2,C_Item.GetItemInfo(candData.gear1))
-	history_table["itemReplaced2"]= (candData and candData.gear2) and select(2,C_Item.GetItemInfo(candData.gear2))
+	history_table["itemReplaced1"]= candData and candData.gear1 or nil
+	history_table["itemReplaced2"]= candData and candData.gear2 or nil
 	history_table["response"] 		= reason and reason.text or response.text
 	history_table["responseID"] 	= reason and reason.sort - 400 or responseID 										-- Changed in v2.0 (reason responseID was 0 pre v2.0)
 	history_table["color"]			= reason and reason.color or response.color											-- New in v2.0
@@ -1299,8 +1299,8 @@ function RCLootCouncilML:TrackAndLogLoot(winner, link, responseID, boss, reason,
 					response   = response,
 					class      = votingFrame:GetCandidateData(session, name, "class"),
 					votes      = votes and votes > 0 and votes or nil,
-					gear1      = gear1 and select(2, C_Item.GetItemInfo(gear1)),
-					gear2      = gear2 and select(2, C_Item.GetItemInfo(gear2)),
+					gear1      = gear1 or nil,
+					gear2      = gear2 or nil,
 					ilvl       = votingFrame:GetCandidateData(session, name, "ilvl"),
 					note       = votingFrame:GetCandidateData(session, name, "note"),
 					roll       = votingFrame:GetCandidateData(session, name, "roll"),

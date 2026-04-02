@@ -120,6 +120,113 @@ function LootHistory:SubscribeToPermanentComms ()
 	})
 end
 
+--- Candidate cache: snapshots voting frame candidate data before it gets replaced by new sessions.
+--- Keyed by neutralized item string → { candidates = { [name] = { response, class, gear1, ... } } }
+--- This is needed because history comms often arrive after the voting frame loot table
+--- has already been replaced by the next boss's session.
+function LootHistory:SetupCandidateCache()
+	if self._candidateCacheSetup then return end
+	self._candidateCacheSetup = true
+	self._candidateCache = self._candidateCache or {}
+	self._matchedCacheKeys = self._matchedCacheKeys or {}
+
+	local votingFrame = addon:GetActiveModule("votingframe")
+	if not votingFrame then return end
+
+	-- Pre-hook ReceiveLootTable: snapshot current candidate data before replacement
+	local origReceiveLootTable = votingFrame.ReceiveLootTable
+	votingFrame.ReceiveLootTable = function(vf, lt)
+		self:SnapshotVotingFrame(vf)
+		origReceiveLootTable(vf, lt)
+	end
+	addon:Print("|cff00ff00[CandTrack]|r Candidate cache installed (ReceiveLootTable hook)")
+end
+
+--- Snapshot all candidate data from the current voting frame loot table into the persistent cache.
+function LootHistory:SnapshotVotingFrame(votingFrame)
+	local lt = votingFrame:GetLootTable()
+	if not lt or #lt == 0 then return end
+
+	local db = addon:Getdb()
+	if not db.trackAllCandidates then return end
+
+	local snapshotCount = 0
+	for ses, entry in ipairs(lt) do
+		if entry.link and entry.candidates then
+			local itemStr = ItemUtils:GetItemStringFromLink(entry.link)
+			if itemStr then
+				local neutralized = ItemUtils:NeutralizeItem(itemStr)
+				-- Build candidate snapshot from the voting frame data
+				local candidates = {}
+				local hasCandidates = false
+				for candidateName, candData in pairs(entry.candidates) do
+					if candData.response and candData.response ~= "ANNOUNCED" then
+						candidates[candidateName] = {
+							response   = candData.response,
+							class      = candData.class,
+							votes      = candData.votes and candData.votes > 0 and candData.votes or nil,
+							gear1      = candData.gear1 or nil,
+							gear2      = candData.gear2 or nil,
+							ilvl       = candData.ilvl ~= "" and candData.ilvl or nil,
+							note       = candData.note,
+							roll       = candData.roll,
+						}
+						if db.trackCouncilVotes and candData.voters and #candData.voters > 0 then
+							candidates[candidateName].voters = candData.voters
+						end
+						hasCandidates = true
+					end
+				end
+				if hasCandidates then
+					self._candidateCache[neutralized] = candidates
+					-- Also index by itemID for fallback matching
+					local cacheItemID = ItemUtils:GetItemIDFromLink(entry.link)
+					if cacheItemID then
+						self._candidateCache["id:" .. cacheItemID] = self._candidateCache["id:" .. cacheItemID] or candidates
+					end
+					snapshotCount = snapshotCount + 1
+				end
+			end
+		end
+	end
+	if snapshotCount > 0 then
+		addon:Print("|cff00ff00[CandTrack]|r Snapshot: cached " .. snapshotCount .. " items from voting frame")
+	end
+end
+
+--- Look up cached candidates for an item link/string. Returns candidates table or nil.
+function LootHistory:GetCachedCandidates(itemLink)
+	-- Try full item string match first
+	local itemStr = ItemUtils:GetItemStringFromLink(itemLink)
+	if itemStr then
+		local neutralized = ItemUtils:NeutralizeItem(itemStr)
+		if not self._matchedCacheKeys[neutralized] then
+			local candidates = self._candidateCache[neutralized]
+			if candidates then
+				self._matchedCacheKeys[neutralized] = true
+				return candidates, "itemStr"
+			end
+		end
+	end
+	-- Fallback: match by item ID only (handles cases where history.lootWon has different bonus IDs)
+	local lookupID = ItemUtils:GetItemIDFromLink(itemLink)
+	if not lookupID then
+		-- Last resort: try C_Item.GetItemInfoInstant which can resolve item names to IDs
+		lookupID = C_Item.GetItemInfoInstant(itemLink)
+	end
+	if lookupID then
+		local idKey = "id:" .. lookupID
+		if not self._matchedCacheKeys[idKey] then
+			local candidates = self._candidateCache[idKey]
+			if candidates then
+				self._matchedCacheKeys[idKey] = true
+				return candidates, "itemID"
+			end
+		end
+	end
+	return nil
+end
+
 function LootHistory:OnHistoryReceived (name, history)
 	if not addon:Getdb().enableHistory then return end
 	if not addon:Getdb().savePersonalLoot then
@@ -128,7 +235,7 @@ function LootHistory:OnHistoryReceived (name, history)
 			return
 		end
 	end
-	-- v3.15.4 check for old date formats 
+	-- v3.15.4 check for old date formats
 	local d, m, y = strsplit("/", history.date, 3)
 	if #tostring(d) < 4 then
 		history.date = string.format("%04d/%02d/%02d", "20" .. y, m, d)
@@ -141,54 +248,89 @@ function LootHistory:OnHistoryReceived (name, history)
 	-- Capture candidate data from the local voting frame when not already present.
 	-- This allows any council member to record candidates, not just the ML.
 	local db = addon:Getdb()
+	-- Ensure candidate cache is set up (hooks VF)
+	self:SetupCandidateCache()
+	-- Also snapshot the current VF state (in case history arrives while VF still has the data)
+	local votingFrame = addon:GetActiveModule("votingframe")
+	if votingFrame then
+		self:SnapshotVotingFrame(votingFrame)
+	end
+
+	local rawLootWon = gsub(tostring(history.lootWon or ""), "\124", "\124\124")
+	addon:Print("|cff00ff00[CandTrack]|r OnHistoryReceived: winner=" .. tostring(name) .. " itemID=" .. tostring(itemID) .. " raw=" .. rawLootWon:sub(1, 80) .. " trackAll=" .. tostring(db.trackAllCandidates) .. " hasCand=" .. tostring(history.candidates ~= nil))
+
 	if db.trackAllCandidates and not history.candidates then
-		local votingFrame = addon:GetActiveModule("votingframe")
-		if votingFrame then
-			local lt = votingFrame:GetLootTable()
-			if lt then
-				-- Match session by item link + awarded winner.
-				-- Track matched sessions to handle duplicate items awarded to the same player.
-				self._matchedSessions = self._matchedSessions or {}
-				for ses, entry in ipairs(lt) do
-					if not self._matchedSessions[ses]
-						and entry.link and addon:ItemIsItem(entry.link, history.lootWon)
-						and (entry.awarded == name or entry.awarded == true) then
-						self._matchedSessions[ses] = true
-						local candidates = {}
-						local hasCandidates = false
-						for candidateName in addon:GroupIterator() do
-							local response = votingFrame:GetCandidateData(ses, candidateName, "response")
-							if response and response ~= "ANNOUNCED" then
-								local gear1 = votingFrame:GetCandidateData(ses, candidateName, "gear1")
-								local gear2 = votingFrame:GetCandidateData(ses, candidateName, "gear2")
-								local votes = votingFrame:GetCandidateData(ses, candidateName, "votes")
-								local voters = votingFrame:GetCandidateData(ses, candidateName, "voters")
-								local candEntry = {
-									response   = response,
-									class      = votingFrame:GetCandidateData(ses, candidateName, "class"),
-									votes      = votes and votes > 0 and votes or nil,
-									gear1      = gear1 and select(2, C_Item.GetItemInfo(gear1)),
-									gear2      = gear2 and select(2, C_Item.GetItemInfo(gear2)),
-									ilvl       = votingFrame:GetCandidateData(ses, candidateName, "ilvl"),
-									note       = votingFrame:GetCandidateData(ses, candidateName, "note"),
-									roll       = votingFrame:GetCandidateData(ses, candidateName, "roll"),
-								}
-								if candEntry.ilvl == "" then candEntry.ilvl = nil end
-								if db.trackCouncilVotes and voters and #voters > 0 then
-									candEntry.voters = voters
+		-- Try to find candidates from the cache (persists across VF session replacements)
+		local cached, matchMethod = self:GetCachedCandidates(history.lootWon)
+		if cached then
+			local count = 0
+			for _ in pairs(cached) do count = count + 1 end
+			history.candidates = cached
+			addon:Print("|cff00ff00[CandTrack]|r SUCCESS (cache/" .. tostring(matchMethod) .. "): attached " .. count .. " candidates")
+		else
+			-- Fallback: try the current voting frame (if history arrives before VF is replaced)
+			if votingFrame then
+				local lt = votingFrame:GetLootTable()
+				if lt and #lt > 0 then
+					local historyItemStr = ItemUtils:GetItemStringFromLink(history.lootWon)
+					local historyNeutral = historyItemStr and ItemUtils:NeutralizeItem(historyItemStr)
+					self._matchedSessions = self._matchedSessions or {}
+					for ses, entry in ipairs(lt) do
+						if not self._matchedSessions[ses] and entry.link then
+							local entryStr = ItemUtils:GetItemStringFromLink(entry.link)
+							local entryNeutral = entryStr and ItemUtils:NeutralizeItem(entryStr)
+							if historyNeutral and entryNeutral and historyNeutral == entryNeutral then
+								self._matchedSessions[ses] = true
+								local candidates = {}
+								local hasCandidates = false
+								local candCount = 0
+								for candidateName in addon:GroupIterator() do
+									local response = votingFrame:GetCandidateData(ses, candidateName, "response")
+									if response and response ~= "ANNOUNCED" then
+										candCount = candCount + 1
+										local gear1 = votingFrame:GetCandidateData(ses, candidateName, "gear1")
+										local gear2 = votingFrame:GetCandidateData(ses, candidateName, "gear2")
+										local votes = votingFrame:GetCandidateData(ses, candidateName, "votes")
+										local voters = votingFrame:GetCandidateData(ses, candidateName, "voters")
+										candidates[candidateName] = {
+											response   = response,
+											class      = votingFrame:GetCandidateData(ses, candidateName, "class"),
+											votes      = votes and votes > 0 and votes or nil,
+											gear1      = gear1 or nil,
+											gear2      = gear2 or nil,
+											ilvl       = votingFrame:GetCandidateData(ses, candidateName, "ilvl"),
+											note       = votingFrame:GetCandidateData(ses, candidateName, "note"),
+											roll       = votingFrame:GetCandidateData(ses, candidateName, "roll"),
+										}
+										if candidates[candidateName].ilvl == "" then candidates[candidateName].ilvl = nil end
+										if db.trackCouncilVotes and voters and #voters > 0 then
+											candidates[candidateName].voters = voters
+										end
+										hasCandidates = true
+									end
 								end
-								candidates[candidateName] = candEntry
-								hasCandidates = true
+								if hasCandidates then
+									history.candidates = candidates
+									addon:Print("|cff00ff00[CandTrack]|r SUCCESS (live VF): ses=" .. ses .. " attached " .. candCount .. " candidates")
+								end
+								break
 							end
 						end
-						if hasCandidates then
-							history.candidates = candidates
-						end
-						break
 					end
 				end
 			end
+			if not history.candidates then
+				local cacheSize = 0
+				for _ in pairs(self._candidateCache) do cacheSize = cacheSize + 1 end
+				addon:Print("|cffff0000[CandTrack]|r NO MATCH: itemID=" .. tostring(itemID) .. " cacheSize=" .. cacheSize .. " VF=" .. tostring(votingFrame and #(votingFrame:GetLootTable() or {}) or "nil") .. " sessions")
+			end
 		end
+	elseif not db.trackAllCandidates then
+		addon:Print("|cffff0000[CandTrack]|r SKIP: trackAllCandidates is disabled")
+	elseif history.candidates then
+		local count = 0
+		for _ in pairs(history.candidates) do count = count + 1 end
+		addon:Print("|cff00ff00[CandTrack]|r SKIP: ML already sent " .. count .. " candidates")
 	end
 	if addon.lootDB.factionrealm[name] then
 		tinsert(addon.lootDB.factionrealm[name], history)
@@ -1560,8 +1702,16 @@ do
 			if cand.class then tinsert(fields, string.format("\"class\":\"%s\"", QuotesEscape(cand.class))) end
 			if cand.votes then tinsert(fields, string.format("\"votes\":%s", tostring(cand.votes))) end
 			if cand.ilvl then tinsert(fields, string.format("\"ilvl\":\"%s\"", QuotesEscape(tostring(cand.ilvl)))) end
-			if cand.gear1 then tinsert(fields, string.format("\"gear1\":\"%s\"", QuotesEscape(cand.gear1))) end
-			if cand.gear2 then tinsert(fields, string.format("\"gear2\":\"%s\"", QuotesEscape(cand.gear2))) end
+			if cand.gear1 then
+				tinsert(fields, string.format("\"gear1\":\"%s\"", QuotesEscape(ItemUtils:GetItemNameFromLink(cand.gear1) or tostring(cand.gear1))))
+				local gs = ItemUtils:GetItemStringFromLink(cand.gear1)
+				if gs then tinsert(fields, string.format("\"gear1ItemString\":\"%s\"", QuotesEscape(gs))) end
+			end
+			if cand.gear2 then
+				tinsert(fields, string.format("\"gear2\":\"%s\"", QuotesEscape(ItemUtils:GetItemNameFromLink(cand.gear2) or tostring(cand.gear2))))
+				local gs = ItemUtils:GetItemStringFromLink(cand.gear2)
+				if gs then tinsert(fields, string.format("\"gear2ItemString\":\"%s\"", QuotesEscape(gs))) end
+			end
 			if cand.note then tinsert(fields, string.format("\"note\":\"%s\"", QuotesEscape(cand.note))) end
 			if cand.roll then tinsert(fields, string.format("\"roll\":%s", tostring(cand.roll))) end
 			if cand.voters then
@@ -1652,8 +1802,8 @@ do
 				tinsert(export, tostring(d.class))
 				tinsert(export, tostring(d.instance))
 				tinsert(export, tostring(d.boss))
-				tinsert(export, d.itemReplaced1 and table.concat {"=HYPERLINK(\"", self:GetWowheadLinkFromItemLink(tostring(d.itemReplaced1)), "\"", formulaDelimiter, "\"", tostring(d.itemReplaced1), "\")"} or "")
-				tinsert(export, d.itemReplaced2 and table.concat {"=HYPERLINK(\"", self:GetWowheadLinkFromItemLink(tostring(d.itemReplaced2)), "\"", formulaDelimiter, "\"", tostring(d.itemReplaced2), "\")"} or "")
+				tinsert(export, d.itemReplaced1 and table.concat {"=HYPERLINK(\"", self:GetWowheadLinkFromItemLink(d.itemReplaced1), "\"", formulaDelimiter, "\"", ItemUtils:GetItemNameFromLink(d.itemReplaced1) or tostring(d.itemReplaced1), "\")"} or "")
+				tinsert(export, d.itemReplaced2 and table.concat {"=HYPERLINK(\"", self:GetWowheadLinkFromItemLink(d.itemReplaced2), "\"", formulaDelimiter, "\"", ItemUtils:GetItemNameFromLink(d.itemReplaced2) or tostring(d.itemReplaced2), "\")"} or "")
 				tinsert(export, tostring(d.responseID))
 				tinsert(export, tostring(d.isAwardReason or false))
 				tinsert(export, rollType)
@@ -1701,8 +1851,16 @@ do
 				tinsert(export, string.format("\"%s\":\"%s\"", "class", tostring(d.class)))
 				tinsert(export, string.format("\"%s\":\"%s\"", "instance", QuotesEscape(d.instance)))
 				tinsert(export, string.format("\"%s\":\"%s\"", "boss", QuotesEscape(d.boss)))
-				tinsert(export, string.format("\"%s\":\"%s\"", "gear1", QuotesEscape(d.itemReplaced1)))
-				tinsert(export, string.format("\"%s\":\"%s\"", "gear2", QuotesEscape(d.itemReplaced2)))
+				tinsert(export, string.format("\"%s\":\"%s\"", "gear1", QuotesEscape(d.itemReplaced1 and ItemUtils:GetItemNameFromLink(d.itemReplaced1) or d.itemReplaced1)))
+				do
+					local gs = d.itemReplaced1 and ItemUtils:GetItemStringFromLink(d.itemReplaced1)
+					if gs then tinsert(export, string.format("\"%s\":\"%s\"", "gear1ItemString", QuotesEscape(gs))) end
+				end
+				tinsert(export, string.format("\"%s\":\"%s\"", "gear2", QuotesEscape(d.itemReplaced2 and ItemUtils:GetItemNameFromLink(d.itemReplaced2) or d.itemReplaced2)))
+				do
+					local gs = d.itemReplaced2 and ItemUtils:GetItemStringFromLink(d.itemReplaced2)
+					if gs then tinsert(export, string.format("\"%s\":\"%s\"", "gear2ItemString", QuotesEscape(gs))) end
+				end
 				tinsert(export, string.format("\"%s\":\"%s\"", "responseID", d.responseID))
 				tinsert(export, string.format("\"%s\":\"%s\"", "isAwardReason", tostring(d.isAwardReason or false)))
 				tinsert(export, string.format("\"%s\":\"%s\"", "rollType", rollType))
