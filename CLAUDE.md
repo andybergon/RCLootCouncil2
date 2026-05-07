@@ -66,7 +66,7 @@ Upstream records only the winning candidate. Fork extends `Modules/History/Histo
 
 ### Taint and secret values
 
-WoW 11.x (Midnight client) introduced `issecretvalue` protection on many APIs. Fork must guard calls — see upstream commit `f28b0844` (Fix trade target retrieval issues caused by secret values) for the pattern upstream adopted.
+WoW 11.x (Midnight client) introduced `issecretvalue` protection on many APIs. Fork must guard calls - see upstream commit `f28b0844` (Fix trade target retrieval issues caused by secret values) for the pattern upstream adopted. Classic clients may not define `issecretvalue`; gate any direct use with `type(issecretvalue) == "function"` as in upstream commit `b9fbee91`.
 
 ## PR Conventions
 
